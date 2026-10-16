@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         프론티아 댓글 관리
 // @namespace    frontia-comment-manager
-// @version      2.1.2
+// @version      2.2.0
 // @description  내 작품의 금지어·어뷰징 댓글(온점·초성·같은 말 반복·맞팔 등) 자동 삭제. 한국어 화면 전용.
 // @match        https://frontia.ai/*
 // @updateURL    https://raw.githubusercontent.com/Knotmoon23/frontia-comment-manager/main/frontia-comment-manager.user.js
@@ -23,7 +23,7 @@
   'use strict';
   if (window.top !== window.self) return;
 
-  const VERSION = '2.1.2';
+  const VERSION = '2.2.0';
   const T = { deleteGap: 1800, idleWait: 10000, menuWait: 2000, reflectWait: 8000, finalCheckWait: 8000,
     perItemMax: 240000, blockedGap: 8000, scrollRounds: 40 };   // perItemMax: 사람이 [삭제]를 누르길 기다리는 3분보다 길게
 
@@ -41,7 +41,8 @@
   const SET_KEY = 'fccl.settings', JOB_KEY = 'fccl.job', LAST_KEY = 'fccl.last', AGREED_KEY = 'fccl.agreed';
 
   const PRESET_WORDS = ['맞팔', '선팔', '임무', '미션', '출석', '출첵', '1등', '1빠'];
-  const DEFAULTS = { maxAgeDays: 7, offTopicWords: PRESET_WORDS, previewFirst: false };
+  // works: 프로필에서 읽은 내 작품 [{id, title}] · offWorks: 체크를 끈 작품 id (새 작품은 켜진 채로 들어옴)
+  const DEFAULTS = { maxAgeDays: 7, offTopicWords: PRESET_WORDS, previewFirst: false, works: [], offWorks: [] };
   let S = { ...DEFAULTS, ...readJSON(SET_KEY, {}) };
   const saveSettings = () => writeJSON(SET_KEY, S);
 
@@ -704,8 +705,14 @@
       return { id, title: (a.innerText || '').split('\n').map(s => s.trim()).filter(Boolean)[0] || '이름 없는 작품' };
     }).filter(Boolean);
     if (!works.length) return finish('작품 없음');
-    job.works = works; job.step = 'work'; job.i = 0; job.tries = 0;
-    return go(workUrl(works[0]));
+    S.works = works;   // 매번 프로필 순서로 새로 고침 (없어진 작품은 빠지고 새 작품은 체크된 채로)
+    S.offWorks = S.offWorks.filter(id => works.some(w => w.id === id));
+    saveSettings();
+    if (job.mode === 'list') return finish();
+    const on = works.filter(w => !S.offWorks.includes(w.id));
+    if (!on.length) return finish('검사할 작품 없음');
+    job.works = on; job.step = 'work'; job.i = 0; job.tries = 0;
+    return go(workUrl(on[0]));
   }
 
   // ③ 작품 하나: 댓글 창 열기 → 판정 → 삭제 (먼저 보기면 모으기만)
@@ -752,6 +759,13 @@
 
   function finish(msg = '') {
     if (!job) return;
+    if (job.mode === 'list') {
+      // 작품 목록만 불러온 것: 결과는 그대로 두고 설정의 '검사 작품' 을 펼쳐 보여 줌
+      writeJSON(JOB_KEY, null);
+      job = null; stopNow = false;
+      open = true; view = 'settings'; worksOpen = true; listMsg = msg;
+      return render();
+    }
     const o = job.out;
     writeJSON(LAST_KEY, { mode: job.mode, at: Date.now(), msg, deleted: o.deleted, found: o.found.slice(0, LIST_MAX),
       warn: o.unreadable ? '읽지 못한 작품 있음 · 프론티아 언어 한국어 필요' : '' });
@@ -762,7 +776,7 @@
   }
 
   /* ===================== 화면 (오른쪽 아래 단추 + 창) ===================== */
-  let open = false, view = 'main', lastStatus = '';
+  let open = false, view = 'main', lastStatus = '', worksOpen = false, listMsg = '';
   let root = null, panel = null, launcher = null;
   const when = t => { const d = new Date(t); return `${d.getMonth() + 1}월 ${d.getDate()}일 ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
   // v2.0 의 결과(확인 목록)는 읽지 않음
@@ -792,6 +806,10 @@
 #fccl label.fl-row { display: block; margin: 10px 0; }
 #fccl input[type=number] { width: 56px; background: #2d303a; color: #fff; border: 1px solid #444; border-radius: 6px; padding: 4px 6px; font: inherit; }
 #fccl textarea { width: 100%; height: 60px; background: #2d303a; color: #fff; border: 1px solid #444; border-radius: 8px; padding: 8px; font: inherit; margin-top: 4px; }
+#fccl details { margin: 10px 0; }
+#fccl summary { cursor: pointer; }
+#fccl .fl-works { max-height: 40vh; overflow-y: auto; margin: 6px 0; }
+#fccl label.fl-work { display: block; margin: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #fccl input[type=checkbox] { width: 18px; height: 18px; vertical-align: -3px; accent-color: #6c5ce7; }
 `;
 
@@ -811,7 +829,7 @@
     panel.addEventListener('click', onClick);
   }
 
-  const runLabel = () => `💬 정리 중 ${Math.min(job.i + 1, job.works.length || 1)}/${job.works.length || '…'}`;
+  const runLabel = () => job.mode === 'list' ? '💬 작품 찾는 중' : `💬 정리 중 ${Math.min(job.i + 1, job.works.length || 1)}/${job.works.length || '…'}`;
   function status(t) {
     lastStatus = t;
     const el = panel && panel.querySelector('.fl-status');
@@ -844,7 +862,7 @@
     if (otherJob()) return `<div class="fl-warn">다른 탭에서 정리 중</div><button class="fl-link" data-act="stopOther">멈추기</button>`;
     const last = lastResult();
     const start = `<button class="fl-big" data-act="start">정리 시작</button>` +
-      `<div class="fl-hint">모든 작품 · 최근 ${S.maxAgeDays}일${S.previewFirst ? ' · 먼저 보기' : ''}</div>`;
+      `<div class="fl-hint">${worksLabel()} · 최근 ${S.maxAgeDays}일${S.previewFirst ? ' · 먼저 보기' : ''}</div>`;
     if (!last) return start;
     const found = last.mode === 'preview' ? last.found || [] : [];
     const head = `<div class="fl-done">${last.mode === 'preview' ? `감지 ${found.length}건` : `✔ ${last.deleted}건 삭제`}` +
@@ -852,10 +870,16 @@
       (last.msg ? `<div class="fl-warn">${esc(last.msg)}</div>` : '') + (last.warn ? `<div class="fl-warn">${esc(last.warn)}</div>` : '');
     if (!found.length || !S.previewFirst) return head + start;   // 먼저 보기를 끈 뒤에는 바로 [정리 시작]
     return head + found.map(b => `<div class="fl-item">${esc(b)}</div>`).join('') +
-      `<div class="fl-bar"><button class="fl-red" data-act="delAll">${found.length}건 지우기</button></div>`;
+      `<div class="fl-bar"><button class="fl-red" data-act="delAll">${found.length}건 지우기</button><div class="fl-hint"><button class="fl-link" data-act="start">다시 보기</button></div></div>`;
   }
 
-  const settingsHtml = () => `<label class="fl-row">최근 <input type="number" id="fl-days" min="1" max="60"> 일</label>
+  const onCount = () => S.works.filter(w => !S.offWorks.includes(w.id)).length;
+  const worksLabel = () => S.works.length ? `작품 ${onCount()}/${S.works.length}` : '작품 목록 없음';
+  const worksHtml = () => `<details id="fl-works-box"${worksOpen ? ' open' : ''}><summary>검사 작품 (${S.works.length ? `${onCount()}/${S.works.length}` : '없음'})</summary>
+    ${listMsg ? `<div class="fl-warn">${esc(listMsg)}</div>` : ''}
+    <div class="fl-works">${S.works.map(w => `<label class="fl-work"><input type="checkbox" data-wid="${esc(w.id)}"${S.offWorks.includes(w.id) ? '' : ' checked'}> ${esc(w.title)}</label>`).join('')}</div>
+    <button class="fl-link" data-act="loadWorks">${S.works.length ? '목록 다시 불러오기' : '목록 불러오기'}</button></details>`;
+  const settingsHtml = () => `${worksHtml()}<label class="fl-row">최근 <input type="number" id="fl-days" min="1" max="60"> 일</label>
     <label class="fl-row">금지어<textarea id="fl-words" placeholder="맞팔, 임무, 출석"></textarea></label>
     <label class="fl-row"><input type="checkbox" id="fl-preview"> 지우기 전에 먼저 보기</label>
     <button class="fl-big" data-act="saveSettings">저장</button>
@@ -870,6 +894,7 @@
     S.maxAgeDays = Number.isFinite(d) ? Math.min(60, Math.max(1, d)) : DEFAULTS.maxAgeDays;
     S.offTopicWords = [...new Set(panel.querySelector('#fl-words').value.split(/[,，\n]/).map(w => w.trim()).filter(Boolean))];
     S.previewFirst = panel.querySelector('#fl-preview').checked;
+    S.offWorks = [...panel.querySelectorAll('input[data-wid]')].filter(i => !i.checked).map(i => i.dataset.wid);
     saveSettings();
   }
 
@@ -878,10 +903,12 @@
     if (!b) return;
     const act = b.dataset.act;
     if (act === 'close') { open = false; render(); return; }
-    if (act === 'settings') { view = 'settings'; render(); return; }
+    if (act === 'settings') { view = 'settings'; worksOpen = false; listMsg = ''; render(); return; }
     if (act === 'back') { view = 'main'; render(); return; }
     if (act === 'saveSettings') { readSettings(); view = 'main'; render(); return; }
+    if (act === 'loadWorks') { readSettings(); startJob('list'); return; }
     if (act === 'start') {
+      if (!S.works.length) { startJob('list'); return; }   // 처음: 작품 목록부터 불러와 고르게 함
       if (!S.previewFirst && gmGet(AGREED_KEY, '') !== '1') {
         if (!confirm('금지어·어뷰징 댓글 바로 삭제\n(되돌리기 불가)')) return;
         gmSet(AGREED_KEY, '1');
