@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         프론티아 댓글 관리
 // @namespace    frontia-comment-manager
-// @version      2.4.0
+// @version      2.5.0
 // @description  내 작품의 금지어·어뷰징 댓글(온점·초성·이모지·금지어·도배) 자동 삭제. 한국어 화면 전용.
 // @match        https://frontia.ai/*
 // @updateURL    https://raw.githubusercontent.com/Knotmoon23/frontia-comment-manager/main/frontia-comment-manager.user.js
@@ -15,7 +15,7 @@
 
 // 흐름: [정리 시작] → 첫 화면에서 내 프로필 주소 읽기 → 내 프로필에서 작품 목록 →
 //       작품마다 댓글 창 열기 → 판정 → 걸린 것 바로 삭제 → 지운 건수
-// 지우는 것: 온점·기호·이모지만 · 초성만 · 금지어(구걸·홍보·보상용·흔적 포함, 설정에서 고침) · 도배(설정). 길이 기준보다 긴 댓글은 안 지움.
+// 지우는 것: 온점·기호만 · 이모지만(설정) · 초성만 · 금지어(구걸·홍보·보상용·흔적 포함, 설정에서 고침) · 도배(설정). 길이 기준보다 긴 댓글은 안 지움.
 // '지우기 전 확인' 을 켜면 지우지 않고 걸린 댓글 글만 보여 줌.
 // 작품을 옮겨 다니며 페이지가 새로 열리므로, 진행 상태는 저장소(fccl.job)에 두고 새 페이지에서 이어 간다.
 // 읽기·삭제는 지휘소 엔진(src/frontia-comment-cleaner.user.js)에서 한국어 부분만 옮겨 온 것.
@@ -24,7 +24,7 @@
   'use strict';
   if (window.top !== window.self) return;
 
-  const VERSION = '2.4.0';
+  const VERSION = '2.5.0';
   const T = { deleteGap: 1800, idleWait: 10000, menuWait: 2000, reflectWait: 8000, finalCheckWait: 8000,
     perItemMax: 240000, blockedGap: 8000, scrollRounds: 40 };   // perItemMax: 사람이 [삭제]를 누르길 기다리는 3분보다 길게
 
@@ -49,7 +49,7 @@
     '도장 꾹', '도장 찍', '찍고 갑니다', '다녀 갑니다', '흔적 남기'];
   // works: 프로필에서 읽은 내 작품 [{id, title}] · offWorks: 체크를 끈 작품 id (새 작품은 켜진 채로 들어옴)
   // maxLen: 이보다 긴 댓글은 안 지움 · burst/burstCount: 도배(같은 사람·같은 말·1시간 안 N번)
-  const DEFAULTS = { maxAgeDays: 7, maxLen: 20, burst: true, burstCount: 3, offTopicWords: PRESET_WORDS, previewFirst: false,
+  const DEFAULTS = { maxAgeDays: 7, maxLen: 20, burst: true, burstCount: 3, emoji: true, offTopicWords: PRESET_WORDS, previewFirst: false,
     works: [], offWorks: [], wordsV: 2 };
   let S = { ...DEFAULTS, ...readJSON(SET_KEY, {}) };
   // v2.3 이하에서 저장한 금지어에는 새 기본 금지어(구걸·보상용·흔적)가 없음 → 한 번만 더해 줌
@@ -76,7 +76,7 @@
   }
 
   /* ===================== 판정 (한국어) ===================== */
-  // 지우는 것: 온점·기호·이모지만 · 초성만 · 금지어(구걸·홍보·보상용·흔적 포함, 설정에서 고침) · 도배(설정에서 끔/켬)
+  // 지우는 것: 온점·기호만 · 이모지만(설정에서 끔/켬) · 초성만 · 금지어(구걸·홍보·보상용·흔적 포함, 설정에서 고침) · 도배(설정에서 끔/켬)
   // 설정의 '길이 기준' 보다 긴 댓글은 지우지 않음.
   const seg = typeof Intl !== 'undefined' && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
   const graphemes = s => seg ? [...seg.segment(s)].map(x => x.segment) : [...s];
@@ -89,7 +89,8 @@
   function judgeText(body) {
     const t = norm(body);
     if (!t || lengthOf(body) > S.maxLen) return null;
-    if (SYMBOLS_ONLY.test(t)) return '온점·기호';
+    // 이모지가 섞인 기호뿐인 글은 '이모지' (설정에서 끌 수 있음), 이모지 없는 기호뿐이면 '온점·기호'
+    if (SYMBOLS_ONLY.test(t)) return !/\p{Extended_Pictographic}/u.test(t) ? '온점·기호' : S.emoji ? '이모지' : null;
     if (/^[ㄱ-ㆎ]+$/.test(t.replace(/[^\p{L}]/gu, ''))) return '초성';
     const hit = (S.offTopicWords || []).find(w => flat(w) && flat(t).includes(flat(w)));
     return hit ? '금지어 ' + hit : null;
@@ -386,7 +387,7 @@
     });
     markBurst(list);
     // 나와 대화 중인 답글('ㅎㅎ' 등)은 금지어·구걸이 아니면 남김
-    const light = ['온점·기호', '초성', '도배'];
+    const light = ['온점·기호', '이모지', '초성', '도배'];
     list.forEach(c => { if (c.convo && light.includes(c.verdict)) c.verdict = null; });
     const hits = list.filter(c => c.verdict);
     return { hits, rows: rows.length, unreadable };
@@ -858,8 +859,9 @@
     <label class="fl-row">길이 기준: <input type="number" id="fl-maxlen" min="1" max="500"> 자 이하만 삭제</label>
     <label class="fl-row">금지어<textarea id="fl-words" class="fl-tall" placeholder="맞팔, 임무, 출석"></textarea></label>
     <label class="fl-row">도배 삭제 <input type="checkbox" id="fl-burst"> · 같은 말 <input type="number" id="fl-burstn" min="2" max="20"> 번 이상</label>
+    <label class="fl-row">이모지 삭제 <input type="checkbox" id="fl-emoji"></label>
     <label class="fl-row">지우기 전 확인 <input type="checkbox" id="fl-preview"></label>
-    <div class="fl-note">*기본 삭제: 온점(.), 초성도배, 이모지 하나</div>
+    <div class="fl-note">*기본 삭제: 온점(.), 초성도배</div>
     <button class="fl-big" data-act="saveSettings">저장</button>
     <div class="fl-hint">v${VERSION}</div>`;
   function fillSettings() {
@@ -867,6 +869,7 @@
     panel.querySelector('#fl-maxlen').value = S.maxLen;
     panel.querySelector('#fl-burst').checked = !!S.burst;
     panel.querySelector('#fl-burstn').value = S.burstCount;
+    panel.querySelector('#fl-emoji').checked = !!S.emoji;
     panel.querySelector('#fl-words').value = (S.offTopicWords || []).join(', ');
     panel.querySelector('#fl-preview').checked = !!S.previewFirst;
   }
@@ -877,6 +880,7 @@
     S.maxLen = num('#fl-maxlen', 1, 500, DEFAULTS.maxLen);
     S.burst = panel.querySelector('#fl-burst').checked;
     S.burstCount = num('#fl-burstn', 2, 20, DEFAULTS.burstCount);
+    S.emoji = panel.querySelector('#fl-emoji').checked;
     S.offTopicWords = [...new Set(panel.querySelector('#fl-words').value.split(/[,，\n]/).map(w => w.trim()).filter(Boolean))];
     S.previewFirst = panel.querySelector('#fl-preview').checked;
     S.offWorks = [...panel.querySelectorAll('input[data-wid]')].filter(i => !i.checked).map(i => i.dataset.wid);
