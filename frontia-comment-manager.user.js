@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         프론티아 댓글 관리
 // @namespace    frontia-comment-manager
-// @version      2.5.0
+// @version      2.5.1
 // @description  내 작품의 금지어·어뷰징 댓글(온점·초성·이모지·금지어·도배) 자동 삭제. 한국어 화면 전용.
 // @match        https://frontia.ai/*
 // @updateURL    https://raw.githubusercontent.com/Knotmoon23/frontia-comment-manager/main/frontia-comment-manager.user.js
@@ -24,7 +24,7 @@
   'use strict';
   if (window.top !== window.self) return;
 
-  const VERSION = '2.5.0';
+  const VERSION = '2.5.1';
   const T = { deleteGap: 1800, idleWait: 10000, menuWait: 2000, reflectWait: 8000, finalCheckWait: 8000,
     perItemMax: 240000, blockedGap: 8000, scrollRounds: 40 };   // perItemMax: 사람이 [삭제]를 누르길 기다리는 3분보다 길게
 
@@ -757,8 +757,11 @@
 #fccl .fl-launch { float: right; display: flex; align-items: center; gap: 8px; background: #4b5563; color: #fff; padding: 8px 16px 8px 8px; font-weight: 700; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
 #fccl .fl-ico { width: 30px; height: 30px; object-fit: contain; }
 #fccl .fl-launch.run { background: #e17055; }
-#fccl .fl-panel { clear: both; position: absolute; right: 0; bottom: 58px; width: min(360px, calc(100vw - 32px)); max-height: 72vh; overflow-y: auto;
+#fccl[data-h="left"] .fl-launch { float: left; }
+#fccl .fl-panel { clear: both; position: absolute; right: 0; bottom: 58px; width: min(360px, calc(100vw - 32px)); max-height: min(72vh, calc(100vh - 160px)); overflow-y: auto;
   background: #1f2128; border: 1px solid #3a3d48; border-radius: 14px; padding: 14px; box-shadow: 0 8px 32px rgba(0,0,0,.5); }
+#fccl[data-h="left"] .fl-panel { right: auto; left: 0; }
+#fccl[data-v="top"] .fl-panel { bottom: auto; top: 58px; }
 #fccl .fl-head { display: flex; align-items: center; gap: 8px; margin: -14px -14px 12px; padding: 10px 12px 10px 14px;
   background: #2e2a52; border-bottom: 1px solid #4b4580; border-radius: 13px 13px 0 0; position: sticky; top: -14px; z-index: 1; }
 #fccl .fl-head .fl-ico { width: 26px; height: 26px; }
@@ -789,6 +792,39 @@
 #fccl input[type=checkbox] { width: 18px; height: 18px; vertical-align: -3px; accent-color: #6c5ce7; }
 `;
 
+  // 단추가 사이트의 단추·입력칸(댓글 전송 등)을 가리면 비어 있는 다른 모서리로 옮김. 창이 열려 있을 때는 그대로
+  const SPOTS = [['right', 'bottom'], ['left', 'bottom'], ['right', 'top'], ['left', 'top']];
+  const SITE_HIT = 'button,a[href],input,textarea,select,[role="button"],[contenteditable="true"]';
+  let spot = 0;
+  function placeAt(i) {
+    const [h, v] = SPOTS[i];
+    spot = i; root.dataset.h = h; root.dataset.v = v;
+    Object.assign(root.style, { left: h === 'left' ? '20px' : 'auto', right: h === 'right' ? '20px' : 'auto',
+      top: v === 'top' ? '72px' : 'auto', bottom: v === 'bottom' ? '20px' : 'auto' });
+  }
+  // 그 자리에 단추를 두면 가려지는 사이트 요소 수 (단추 네 귀퉁이·가운데를 찍어 봄)
+  function blockedAt(i, w, h) {
+    const [hz, v] = SPOTS[i];
+    const x = hz === 'right' ? innerWidth - 20 - w : 20, y = v === 'bottom' ? innerHeight - 20 - h : 72;
+    const hit = new Set();
+    for (const [px, py] of [[x + 4, y + 4], [x + w - 4, y + 4], [x + 4, y + h - 4], [x + w - 4, y + h - 4], [x + w / 2, y + h / 2]]) {
+      for (const e of document.elementsFromPoint(px, py)) {
+        if (e.closest('#fccl')) continue;
+        const el = e.closest(SITE_HIT);
+        if (el) hit.add(el);
+      }
+    }
+    return hit.size;
+  }
+  function dodge() {
+    if (!root || !root.isConnected || open) return;
+    const r = launcher.getBoundingClientRect();
+    if (!r.width || blockedAt(spot, r.width, r.height) === 0) return;
+    let best = spot, least = Infinity;
+    SPOTS.forEach((_, i) => { const n = blockedAt(i, r.width, r.height); if (n < least) { least = n; best = i; } });
+    if (best !== spot) placeAt(best);
+  }
+
   function buildUi() {
     if (!document.getElementById('fccl-css')) {
       const st = document.createElement('style');
@@ -802,6 +838,7 @@
     launcher = root.querySelector('.fl-launch');
     panel = root.querySelector('.fl-panel');
     launcher.addEventListener('click', () => { open = !open; view = 'main'; render(); });
+    placeAt(spot);
     panel.addEventListener('click', onClick);
   }
 
@@ -920,6 +957,7 @@
   /* ---------- 시작 ---------- */
   setInterval(() => { if (job) saveJob(); }, 20000);   // 진행 중 표시 + 다른 탭에서 누른 '중단' 받기
   setInterval(() => { if (document.body && (!root || !root.isConnected)) render(); }, 2000);   // 사이트가 화면을 다시 그려 단추가 사라지면
+  setInterval(dodge, 1000);
 
   function boot() {
     const cur = readJSON(JOB_KEY, null);
