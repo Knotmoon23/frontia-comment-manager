@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         프론티아 댓글 관리
 // @namespace    frontia-comment-manager
-// @version      2.7.1
+// @version      2.7.2
 // @description  내 작품의 금지어·어뷰징 댓글(온점·초성·이모지·금지어·도배) 자동 삭제. 한국어 화면 전용.
 // @match        https://frontia.ai/*
 // @updateURL    https://raw.githubusercontent.com/Knotmoon23/frontia-comment-manager/main/frontia-comment-manager.user.js
@@ -25,7 +25,7 @@
   if (window.top !== window.self) return;
 
   const OURS = '#fccl, #fccl-btn';
-  const VERSION = '2.7.1';
+  const VERSION = '2.7.2';
   const T = { deleteGap: 1800, idleWait: 10000, menuWait: 2000, reflectWait: 8000, finalCheckWait: 8000,
     perItemMax: 240000, blockedGap: 8000, scrollRounds: 40 };   // perItemMax: 사람이 [삭제]를 누르길 기다리는 3분보다 길게
 
@@ -842,11 +842,14 @@
     const av = avatar();
     if (!av) return null;
     const ar = av.getBoundingClientRect(), cy = (ar.top + ar.bottom) / 2;
-    return [...document.querySelectorAll('a[href], button')].filter(e => {
+    const cands = [...document.querySelectorAll('a[href], button')].filter(e => {
       if (e.closest(OURS) || e.closest('[role="dialog"]') || e.contains(av)) return false;
       const r = e.getBoundingClientRect();
       return r.width > 0 && r.width < 200 && r.right <= ar.left + 1 && Math.abs((r.top + r.bottom) / 2 - cy) < 12;
-    }).sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0] || null;
+    });
+    // 실제 머리줄(2026-10-16 KR): [재화 /payment][최근 기록][채팅][프로필] — 재화는 결제 화면 링크. 못 찾으면 프로필 바로 왼쪽
+    return cands.find(e => /^\/payment(?:[/?#]|$)/.test(e.getAttribute('href') || '')) ||
+      cands.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0] || null;
   }
   // 아이콘은 머리줄 안, 재화 단추 바로 앞에 끼워 넣음 → 사이트 단추들이 왼쪽으로 밀릴 뿐 가려지는 것이 없음.
   // 사이트가 머리줄을 다시 그려 빠지면 0.3초 안에 다시 끼움. 머리줄을 한 번도 못 찾은 화면에서는 왼쪽 아래.
