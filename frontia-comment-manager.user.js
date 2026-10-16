@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         프론티아 댓글 관리
 // @namespace    frontia-comment-manager
-// @version      2.7.2
+// @version      2.8.0
 // @description  내 작품의 금지어·어뷰징 댓글(온점·초성·이모지·금지어·도배) 자동 삭제. 한국어 화면 전용.
 // @match        https://frontia.ai/*
 // @updateURL    https://raw.githubusercontent.com/Knotmoon23/frontia-comment-manager/main/frontia-comment-manager.user.js
@@ -25,7 +25,7 @@
   if (window.top !== window.self) return;
 
   const OURS = '#fccl, #fccl-btn';
-  const VERSION = '2.7.2';
+  const VERSION = '2.8.0';
   const T = { deleteGap: 1800, idleWait: 10000, menuWait: 2000, reflectWait: 8000, finalCheckWait: 8000,
     perItemMax: 240000, blockedGap: 8000, scrollRounds: 40 };   // perItemMax: 사람이 [삭제]를 누르길 기다리는 3분보다 길게
 
@@ -808,6 +808,11 @@
 #fccl .fl-status { font-weight: 600; margin: 6px 0 10px; word-break: break-all; }
 #fccl .fl-item { background: #272a33; border-radius: 8px; padding: 6px 10px; margin: 4px 0; white-space: pre-wrap; word-break: break-word; max-height: 6em; overflow-y: auto; }
 #fccl .fl-bar { position: sticky; bottom: -14px; background: #1f2128; padding: 10px 0 2px; }
+#fccl .fl-name { display: inline-flex; align-items: center; gap: 6px; }
+#fccl .fl-q { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; border: 1px solid #5b6070; color: #9aa1b2; font-size: 11px; font-weight: 700; cursor: help; flex: none; }
+#fccl .fl-q:hover { background: #6c5ce7; border-color: #6c5ce7; color: #fff; }
+#fccl-tip { position: fixed; z-index: 2147483001; max-width: 240px; background: #0f1015; color: #eceef3; border: 1px solid #3a3d48; border-radius: 8px;
+  padding: 6px 10px; font: 600 12.5px/1.45 -apple-system, 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; pointer-events: none; box-shadow: 0 4px 14px rgba(0,0,0,.45); }
 #fccl .fl-opt { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 46px; padding: 6px 2px;
   border-bottom: 1px solid #2c2f3a; font-weight: 600; color: #eceef3; background: transparent; border-radius: 0; text-align: left; cursor: pointer; }
 #fccl .fl-val { color: #a9b0c0; font-weight: 600; }
@@ -900,6 +905,9 @@
     if (!launcher.dataset.on) { launcher.dataset.on = '1'; launcher.addEventListener('click', () => { open = !open; view = 'main'; render(); }); }
     place();
     panel.addEventListener('click', onClick);
+    panel.addEventListener('mouseover', e => { const t = e.target.closest('.fl-q'); if (t) showTip(t); });
+    panel.addEventListener('mouseout', e => { if (e.target.closest('.fl-q')) hideTip(); });
+    panel.addEventListener('scroll', hideTip);
   }
 
   const runLabel = () => job.mode === 'list' ? '작품 찾는 중' : `정리 중 ${Math.min(job.i + 1, job.works.length || 1)}/${job.works.length || '…'}`;
@@ -916,6 +924,7 @@
   }
 
   function render() {
+    hideTip();
     if (!root || !root.isConnected) buildUi();
     setLauncher(job ? runLabel() : '댓글 관리');
     launcher.classList.toggle('run', !!job);
@@ -948,14 +957,28 @@
 
   const onCount = () => S.works.filter(w => !S.offWorks.includes(w.id)).length;
   const worksLabel = () => S.works.length ? `작품 ${onCount()}/${S.works.length}` : '작품 목록 없음';
-  const worksHtml = () => `<details id="fl-works-box"${worksOpen ? ' open' : ''}><summary class="fl-opt"><span>검사 작품</span><span class="fl-val">${S.works.length ? `${onCount()}/${S.works.length}` : '없음'} <span class="fl-arrow">▼</span></span></summary>
+  const worksHtml = () => `<details id="fl-works-box"${worksOpen ? ' open' : ''}><summary class="fl-opt">${named('검사 작품')}<span class="fl-val">${S.works.length ? `${onCount()}/${S.works.length}` : '없음'} <span class="fl-arrow">▼</span></span></summary>
     ${listMsg ? `<div class="fl-warn">${esc(listMsg)}</div>` : ''}
     <div class="fl-works">${S.works.map(w => `<label class="fl-work"><input type="checkbox" data-wid="${esc(w.id)}"${S.offWorks.includes(w.id) ? '' : ' checked'}> ${esc(w.title)}</label>`).join('')}</div>
     </details>
-    <button class="fl-opt fl-optbtn" data-act="loadWorks"><span>에피소드 목록 확인</span><span class="fl-val">↻</span></button>`;
+    <button class="fl-opt fl-optbtn" data-act="loadWorks">${named('에피소드 목록 확인')}<span class="fl-val">↻</span></button>`;
+  // 설정 항목 설명 (? 에 커서를 올리면 보임)
+  const HELP = {
+    '검사 작품': '정리할 작품 선택',
+    '에피소드 목록 확인': '프로필의 작품 목록 다시 읽기 · 새 작품 추가',
+    '검사 기간': '최근 며칠 안의 댓글만 검사',
+    '길이 기준': '이 글자 수보다 긴 댓글은 삭제 안 함 (띄어쓰기 빼고)',
+    '도배 삭제': '한 사람이 1시간 안에 같은 말을 여러 번 단 댓글 삭제',
+    '도배 기준': '도배로 볼 같은 말 횟수',
+    '이모지 삭제': '이모지만 있는 댓글 삭제',
+    '지우기 전 확인': '바로 지우지 않고 걸린 댓글 먼저 보기',
+    '금지어': '이 말이 들어간 댓글 삭제 · 쉼표로 구분 · 띄어쓰기 무시',
+  };
+  const q = name => HELP[name] ? `<span class="fl-q" data-tip="${esc(HELP[name])}" aria-label="${esc(HELP[name])}">?</span>` : '';
+  const named = name => `<span class="fl-name">${name}${q(name)}</span>`;
   // 한 줄 = 이름 + 오른쪽 조작 (−/+ 숫자 · 스위치)
   const stepper = (id, min, max, unit) => `<span class="fl-step"><button type="button" data-act="step" data-for="${id}" data-d="-1">−</button><input type="number" id="${id}" min="${min}" max="${max}"><i>${unit}</i><button type="button" data-act="step" data-for="${id}" data-d="1">+</button></span>`;
-  const opt = (name, ctl) => `<label class="fl-opt"><span>${name}</span>${ctl}</label>`;
+  const opt = (name, ctl) => `<label class="fl-opt">${named(name)}${ctl}</label>`;
   const sw = id => `<input type="checkbox" class="fl-sw" id="${id}">`;
   const settingsHtml = () => `${worksHtml()}
     ${opt('검사 기간', stepper('fl-days', 1, 60, '일'))}
@@ -964,7 +987,7 @@
     ${opt('도배 기준', stepper('fl-burstn', 2, 20, '번'))}
     ${opt('이모지 삭제', sw('fl-emoji'))}
     ${opt('지우기 전 확인', sw('fl-preview'))}
-    <div class="fl-sec">금지어</div>
+    <div class="fl-sec">${named('금지어')}</div>
     <textarea id="fl-words" class="fl-tall" placeholder="맞팔, 임무, 출석"></textarea>
     <div class="fl-note">기본 삭제: 온점(.), 초성도배</div>
     <button class="fl-big" data-act="saveSettings">저장</button>
@@ -992,7 +1015,19 @@
     saveSettings();
   }
 
+  function showTip(el) {
+    let tip = document.getElementById('fccl-tip');
+    if (!tip) { tip = document.createElement('div'); tip.id = 'fccl-tip'; document.body.appendChild(tip); }
+    tip.textContent = el.dataset.tip;
+    tip.hidden = false;
+    const r = el.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+    tip.style.left = Math.max(8, Math.min(innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
+    tip.style.top = (r.bottom + 6 + h > innerHeight ? r.top - h - 6 : r.bottom + 6) + 'px';
+  }
+  function hideTip() { const tip = document.getElementById('fccl-tip'); if (tip) tip.hidden = true; }
+
   function onClick(e) {
+    if (e.target.closest('.fl-q')) { e.preventDefault(); return; }
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const act = b.dataset.act;
