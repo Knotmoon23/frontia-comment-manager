@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         프론티아 댓글 관리
 // @namespace    frontia-comment-manager
-// @version      2.7.0
+// @version      2.7.1
 // @description  내 작품의 금지어·어뷰징 댓글(온점·초성·이모지·금지어·도배) 자동 삭제. 한국어 화면 전용.
 // @match        https://frontia.ai/*
 // @updateURL    https://raw.githubusercontent.com/Knotmoon23/frontia-comment-manager/main/frontia-comment-manager.user.js
@@ -24,7 +24,8 @@
   'use strict';
   if (window.top !== window.self) return;
 
-  const VERSION = '2.7.0';
+  const OURS = '#fccl, #fccl-btn';
+  const VERSION = '2.7.1';
   const T = { deleteGap: 1800, idleWait: 10000, menuWait: 2000, reflectWait: 8000, finalCheckWait: 8000,
     perItemMax: 240000, blockedGap: 8000, scrollRounds: 40 };   // perItemMax: 사람이 [삭제]를 누르길 기다리는 3분보다 길게
 
@@ -173,7 +174,7 @@
   // 에피소드 화면의 「댓글 6 >」 머리 (제목 2개 = 이름·숫자). 글자가 달라도 모양으로 찾음
   function commentHeadBtn() {
     const cands = [...document.querySelectorAll('button')].filter(b => {
-      if (b.closest('#fccl') || b.closest('[role="dialog"]')) return false;
+      if (b.closest(OURS) || b.closest('[role="dialog"]')) return false;
       const hs = b.querySelectorAll('h1,h2,h3,h4');
       return hs.length === 2 && /^\d[\d,]*\+?$/.test(visibleText(hs[1]));
     });
@@ -215,7 +216,7 @@
   // 스크롤할 상자: 댓글 창이 있으면 그 안에서만 (엉뚱한 화면을 스크롤하지 않게)
   function boxIn(el) {
     return [...el.querySelectorAll('div')]
-      .filter(d => !d.closest('#fccl') && /(auto|scroll)/.test(getComputedStyle(d).overflowY) &&
+      .filter(d => !d.closest(OURS) && /(auto|scroll)/.test(getComputedStyle(d).overflowY) &&
         d.scrollHeight > d.clientHeight + 20 && d.clientHeight > 120)
       .sort((a, b) => b.scrollHeight - a.scrollHeight)[0] || null;
   }
@@ -247,7 +248,7 @@
   // 기본 정렬이 '인기' → '최신' 으로. 글자로 못 찾으면 '나란한 작은 버튼 2개 중 둘째'
   function sortTabs() {
     const pairs = [...commentRoot().querySelectorAll('div')].filter(d => {
-      if (d.closest('#fccl')) return false;
+      if (d.closest(OURS)) return false;
       const kids = [...d.children];
       return kids.length === 2 && kids.every(k => k.tagName === 'BUTTON' && visibleText(k) && visibleText(k).length <= 20 && !/\d/.test(visibleText(k)));
     });
@@ -359,7 +360,7 @@
   }
 
   const getDirectorId = () => {
-    const a = [...document.querySelectorAll('a[href^="/users/profile/"]')].find(x => !x.closest(ROW_SEL) && !x.closest('#fccl'));
+    const a = [...document.querySelectorAll('a[href^="/users/profile/"]')].find(x => !x.closest(ROW_SEL) && !x.closest(OURS));
     return a ? a.getAttribute('href').split('?')[0].split('/').pop() : null;
   };
 
@@ -619,11 +620,11 @@
 
   // 머리줄 오른쪽 끝의 둥근 프로필 그림 (못 찾으면 null)
   function avatar() {
-    const search = [...document.querySelectorAll('input')].find(i => !i.closest('#fccl'));
+    const search = [...document.querySelectorAll('input')].find(i => !i.closest(OURS));
     const sr = search && search.getBoundingClientRect();
     const inRow = r => sr ? (r.top + r.bottom) / 2 >= sr.top - 8 && (r.top + r.bottom) / 2 <= sr.bottom + 8 : r.bottom < 60;
     const right = [...document.querySelectorAll('img, button, a')].filter(e => {
-      if (e.closest('#fccl')) return false;
+      if (e.closest(OURS) || e.closest('[role="dialog"]')) return false;
       const r = e.getBoundingClientRect();
       return r.width > 0 && inRow(r) && r.right <= innerWidth + 1;
     }).sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
@@ -651,10 +652,10 @@
     const path = '/users/profile/' + job.myId;
     if (here() !== path) return job.tries > 2 ? finish('내 프로필 찾기 실패') : go(path + '?tab=episodes');
     status('작품 찾는 중…');
-    const cards = () => [...document.querySelectorAll('a[href*="/episodes/"]')].filter(a => !a.closest('#fccl'));
+    const cards = () => [...document.querySelectorAll('a[href*="/episodes/"]')].filter(a => !a.closest(OURS));
     await waitFor(() => cards().length, 20000);
     // 맨 아래까지 내려 봄. 카드 수가 4초 동안 그대로면 끝 (최대 60초)
-    const boxes = () => [...document.querySelectorAll('div')].filter(d => !d.closest('#fccl') &&
+    const boxes = () => [...document.querySelectorAll('div')].filter(d => !d.closest(OURS) &&
       /(auto|scroll)/.test(getComputedStyle(d).overflowY) && d.scrollHeight > d.clientHeight + 20);
     let last = -1, since = Date.now();
     for (const until = Date.now() + 60000; Date.now() < until;) {
@@ -671,7 +672,7 @@
     // 프로필 머리의 '에피소드 29' 같은 수 (찾으면 카드 수와 맞춰 봄)
     const total = (() => {
       for (const e of document.querySelectorAll('a,button,p,span,h1,h2,h3,h4,div')) {
-        if (e.closest('#fccl') || e.children.length > 3) continue;
+        if (e.closest(OURS) || e.children.length > 3) continue;
         const m = /^에피소드\s*(\d[\d,]*)$/.exec(visibleText(e).replace(/\s+/g, ' '));
         if (m) return parseInt(m[1].replace(/,/g, ''), 10);
       }
@@ -723,7 +724,7 @@
   function mineHere() {
     if (!job.myId) return true;
     const ids = [...document.querySelectorAll('a[href^="/users/profile/"]')]
-      .filter(a => !a.closest(ROW_SEL) && !a.closest('#fccl')).map(a => a.getAttribute('href').split('?')[0].split('/').pop());
+      .filter(a => !a.closest(ROW_SEL) && !a.closest(OURS)).map(a => a.getAttribute('href').split('?')[0].split('/').pop());
     return !ids.length || ids.includes(job.myId);
   }
 
@@ -778,18 +779,20 @@
 
   const CSS = `
 #fccl, #fccl * { pointer-events: auto !important; box-sizing: border-box; }
-#fccl { position: fixed; right: 20px; bottom: 20px; z-index: 2147483000; font: 14px/1.5 -apple-system, 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; color: #eceef3; }
+#fccl { position: fixed; left: 20px; bottom: 20px; z-index: 2147483000; font: 14px/1.5 -apple-system, 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; color: #eceef3; }
 #fccl button { font: inherit; cursor: pointer; border: 0; border-radius: 10px; }
-#fccl .fl-launch { position: relative; display: block; width: var(--fl-size, 48px); height: var(--fl-size, 48px); padding: 0; border-radius: 50%; background: transparent; }
-#fccl:not(.fl-top) .fl-launch { background: #2d303a; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
-#fccl .fl-launch:hover { background: rgba(255,255,255,.1); }
-#fccl .fl-launch .fl-ico { width: 100%; height: 100%; }
+#fccl-btn { pointer-events: auto !important; box-sizing: border-box; position: relative; display: block; flex: none; width: var(--fl-size, 48px); height: var(--fl-size, 48px);
+  margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; font: 10px/14px -apple-system, 'Malgun Gothic', sans-serif; }
+#fccl > #fccl-btn { float: left; background: #2d303a; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+#fccl-btn:hover { background: rgba(255,255,255,.1); }
+#fccl-btn .fl-ico { display: block; width: 100%; height: 100%; object-fit: contain; }
 #fccl .fl-ico { width: 30px; height: 30px; object-fit: contain; }
-#fccl .fl-launch.run { box-shadow: 0 0 0 2px #e17055; }
-#fccl .fl-badge { position: absolute; left: 50%; bottom: -9px; transform: translateX(-50%); background: #e17055; color: #fff; font-size: 10px; line-height: 14px; padding: 0 4px; border-radius: 7px; white-space: nowrap; }
+#fccl-btn.run { box-shadow: 0 0 0 2px #e17055; }
+#fccl-btn .fl-badge { position: absolute; left: 50%; bottom: -9px; transform: translateX(-50%); background: #e17055; color: #fff; font-size: 10px; line-height: 14px; padding: 0 4px; border-radius: 7px; white-space: nowrap; }
 #fccl .fl-panel { clear: both; position: absolute; right: 0; bottom: 58px; width: min(360px, calc(100vw - 32px)); max-height: min(72vh, calc(100vh - 160px)); overflow-y: auto;
   background: #1f2128; border: 1px solid #3a3d48; border-radius: 14px; padding: 14px; box-shadow: 0 8px 32px rgba(0,0,0,.5); }
-#fccl.fl-top .fl-panel { bottom: auto; top: calc(var(--fl-size) + 12px); }
+#fccl:not(.fl-top) .fl-panel { right: auto; left: 0; }
+#fccl.fl-top .fl-panel { bottom: auto; top: 0; }
 #fccl .fl-head { display: flex; align-items: center; gap: 8px; margin: -14px -14px 12px; padding: 10px 12px 10px 14px;
   background: #2e2a52; border-bottom: 1px solid #4b4580; border-radius: 13px 13px 0 0; position: sticky; top: -14px; z-index: 1; }
 #fccl .fl-head .fl-ico { width: 26px; height: 26px; }
@@ -840,26 +843,42 @@
     if (!av) return null;
     const ar = av.getBoundingClientRect(), cy = (ar.top + ar.bottom) / 2;
     return [...document.querySelectorAll('a[href], button')].filter(e => {
-      if (e.closest('#fccl') || e.contains(av)) return false;
+      if (e.closest(OURS) || e.closest('[role="dialog"]') || e.contains(av)) return false;
       const r = e.getBoundingClientRect();
       return r.width > 0 && r.width < 200 && r.right <= ar.left + 1 && Math.abs((r.top + r.bottom) / 2 - cy) < 12;
     }).sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0] || null;
   }
+  // 아이콘은 머리줄 안, 재화 단추 바로 앞에 끼워 넣음 → 사이트 단추들이 왼쪽으로 밀릴 뿐 가려지는 것이 없음.
+  // 사이트가 머리줄을 다시 그려 빠지면 0.3초 안에 다시 끼움. 머리줄을 한 번도 못 찾은 화면에서는 왼쪽 아래.
+  // 창(#fccl)은 아이콘 바로 아래에 열림
+  function rowItem(w) {
+    const av = avatar();
+    let row = w.parentElement;
+    while (row && !row.contains(av)) row = row.parentElement;
+    if (!row) return null;
+    let item = w;
+    while (item.parentElement !== row) item = item.parentElement;
+    return item;
+  }
   function place() {
-    if (!root || !root.isConnected) return;
-    const w = walletBtn();
-    if (w) {
-      const r = w.getBoundingClientRect(), size = Math.round(Math.min(40, Math.max(28, r.height)));
+    if (!root || !root.isConnected || !launcher) return;
+    const w = walletBtn(), item = w && rowItem(w);
+    if (item) {
+      if (item.previousElementSibling !== launcher) item.parentElement.insertBefore(launcher, item);
+      launcher.style.setProperty('--fl-size', Math.round(Math.min(40, Math.max(28, w.getBoundingClientRect().height))) + 'px');
+      const r = launcher.getBoundingClientRect();
       root.classList.add('fl-top');
-      root.style.setProperty('--fl-size', size + 'px');
-      Object.assign(root.style, { left: Math.round(r.left - 8 - size) + 'px', top: Math.round(r.top + (r.height - size) / 2) + 'px', right: 'auto', bottom: 'auto' });
+      Object.assign(root.style, { left: 'auto', bottom: 'auto', right: Math.max(8, Math.round(innerWidth - r.right)) + 'px', top: Math.round(r.bottom + 10) + 'px' });
+    } else if (launcher.isConnected && launcher.parentElement !== root) {
+      const r = launcher.getBoundingClientRect();
+      if (r.width) Object.assign(root.style, { right: Math.max(8, Math.round(innerWidth - r.right)) + 'px', top: Math.round(r.bottom + 10) + 'px' });
     } else {
+      if (launcher.parentElement !== root) root.insertBefore(launcher, root.firstChild);
+      launcher.style.removeProperty('--fl-size');
       root.classList.remove('fl-top');
-      root.style.removeProperty('--fl-size');
-      Object.assign(root.style, { left: 'auto', top: 'auto', right: '20px', bottom: '20px' });
+      Object.assign(root.style, { left: '20px', top: 'auto', right: 'auto', bottom: '20px' });
     }
   }
-
   function buildUi() {
     if (!document.getElementById('fccl-css')) {
       const st = document.createElement('style');
@@ -868,11 +887,14 @@
     }
     root = document.createElement('div');
     root.id = 'fccl';
-    root.innerHTML = '<button class="fl-launch" type="button"></button><div class="fl-panel" hidden></div>';
+    root.innerHTML = '<div class="fl-panel" hidden></div>';
     document.body.appendChild(root);
-    launcher = root.querySelector('.fl-launch');
+    if (!launcher) {
+      launcher = document.createElement('button');
+      launcher.id = 'fccl-btn'; launcher.type = 'button';
+    }
     panel = root.querySelector('.fl-panel');
-    launcher.addEventListener('click', () => { open = !open; view = 'main'; render(); });
+    if (!launcher.dataset.on) { launcher.dataset.on = '1'; launcher.addEventListener('click', () => { open = !open; view = 'main'; render(); }); }
     place();
     panel.addEventListener('click', onClick);
   }
