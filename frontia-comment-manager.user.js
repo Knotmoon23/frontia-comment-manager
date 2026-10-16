@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         프론티아 댓글 관리
 // @namespace    frontia-comment-manager
-// @version      2.5.1
+// @version      2.6.0
 // @description  내 작품의 금지어·어뷰징 댓글(온점·초성·이모지·금지어·도배) 자동 삭제. 한국어 화면 전용.
 // @match        https://frontia.ai/*
 // @updateURL    https://raw.githubusercontent.com/Knotmoon23/frontia-comment-manager/main/frontia-comment-manager.user.js
@@ -24,7 +24,7 @@
   'use strict';
   if (window.top !== window.self) return;
 
-  const VERSION = '2.5.1';
+  const VERSION = '2.6.0';
   const T = { deleteGap: 1800, idleWait: 10000, menuWait: 2000, reflectWait: 8000, finalCheckWait: 8000,
     perItemMax: 240000, blockedGap: 8000, scrollRounds: 40 };   // perItemMax: 사람이 [삭제]를 누르길 기다리는 3분보다 길게
 
@@ -653,14 +653,30 @@
     status('작품 찾는 중…');
     const cards = () => [...document.querySelectorAll('a[href*="/episodes/"]')].filter(a => !a.closest('#fccl'));
     await waitFor(() => cards().length, 20000);
-    let last = -1, same = 0;
-    for (let k = 0; k < 30 && same < 3; k++) {
+    // 맨 아래까지 내려 봄. 카드 수가 4초 동안 그대로면 끝 (최대 60초)
+    const boxes = () => [...document.querySelectorAll('div')].filter(d => !d.closest('#fccl') &&
+      /(auto|scroll)/.test(getComputedStyle(d).overflowY) && d.scrollHeight > d.clientHeight + 20);
+    let last = -1, since = Date.now();
+    for (const until = Date.now() + 60000; Date.now() < until;) {
+      const end = cards().pop();   // 마지막 카드를 보이게 한 뒤 맨 아래로 (거꾸로 하면 다시 위로 올라감)
+      if (end) end.scrollIntoView({ block: 'end' });
+      window.scrollTo(0, document.documentElement.scrollHeight);
+      boxes().forEach(b => { b.scrollTop = b.scrollHeight; });
+      await sleep(600);
       const n = cards().length;
-      same = n === last ? same + 1 : 0; last = n;
-      window.scrollBy(0, innerHeight);
-      await sleep(700);
+      if (n !== last) { last = n; since = Date.now(); status(`작품 찾는 중… ${n}개`); }
+      else if (Date.now() - since >= 4000 && !document.querySelector('img[alt="loading-icon"]')) break;
     }
     window.scrollTo(0, 0);
+    // 프로필 머리의 '에피소드 29' 같은 수 (찾으면 카드 수와 맞춰 봄)
+    const total = (() => {
+      for (const e of document.querySelectorAll('a,button,p,span,h1,h2,h3,h4,div')) {
+        if (e.closest('#fccl') || e.children.length > 3) continue;
+        const m = /^에피소드\s*(\d[\d,]*)$/.exec(visibleText(e).replace(/\s+/g, ' '));
+        if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+      }
+      return null;
+    })();
     const seen = new Set();
     const works = cards().map(a => {
       const id = new URL(a.href, location.origin).pathname.split('/')[2];
@@ -669,11 +685,18 @@
       return { id, title: (a.innerText || '').split('\n').map(s => s.trim()).filter(Boolean)[0] || '이름 없는 작품' };
     }).filter(Boolean);
     if (!works.length) return finish('작품 없음');
-    S.works = works;   // 매번 프로필 순서로 새로 고침 (없어진 작품은 빠지고 새 작품은 체크된 채로)
-    S.offWorks = S.offWorks.filter(id => works.some(w => w.id === id));
-    saveSettings();
-    if (job.mode === 'list') return finish();
-    const on = works.filter(w => !S.offWorks.includes(w.id));
+    const short = total && works.length < total ? `에피소드 ${total}개 중 ${works.length}개만 확인` : '';
+    if (job.mode === 'list') {
+      // [에피소드 목록 확인]: 프로필 순서로 새로 고침 (없어진 작품은 빠지고 새 작품은 체크된 채로)
+      S.works = works;
+      S.offWorks = S.offWorks.filter(id => works.some(w => w.id === id));
+      saveSettings();
+      return finish(short);
+    }
+    // 정리할 때는 새 작품만 더함 (한 번 못 불러온 작품이 목록에서 사라지지 않게)
+    const added = works.filter(w => !S.works.some(x => x.id === w.id));
+    if (added.length) { S.works = S.works.concat(added); saveSettings(); }
+    const on = S.works.filter(w => !S.offWorks.includes(w.id));
     if (!on.length) return finish('검사할 작품 없음');
     job.works = on; job.step = 'work'; job.i = 0; job.tries = 0;
     return go(workUrl(on[0]));
@@ -777,19 +800,32 @@
 #fccl .fl-status { font-weight: 600; margin: 6px 0 10px; word-break: break-all; }
 #fccl .fl-item { background: #272a33; border-radius: 8px; padding: 6px 10px; margin: 4px 0; white-space: pre-wrap; word-break: break-word; max-height: 6em; overflow-y: auto; }
 #fccl .fl-bar { position: sticky; bottom: -14px; background: #1f2128; padding: 10px 0 2px; }
-#fccl label.fl-row { display: block; margin: 10px 0; }
-#fccl input[type=number] { width: 56px; background: #2d303a; color: #fff; border: 1px solid #444; border-radius: 6px; padding: 4px 6px; font: inherit; }
+#fccl .fl-opt { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 46px; padding: 6px 2px;
+  border-bottom: 1px solid #2c2f3a; font-weight: 600; color: #eceef3; background: transparent; border-radius: 0; text-align: left; cursor: pointer; }
+#fccl .fl-val { color: #a9b0c0; font-weight: 600; }
+#fccl .fl-optbtn:hover, #fccl summary.fl-opt:hover { background: #262933; }
+#fccl .fl-step { display: inline-flex; align-items: center; gap: 4px; }
+#fccl .fl-step button { width: 30px; height: 30px; border-radius: 8px; background: #2d303a; color: #fff; font-size: 17px; line-height: 1; padding: 0; }
+#fccl .fl-step button:active { background: #6c5ce7; }
+#fccl .fl-step input { width: 38px; background: transparent; color: #fff; border: 0; text-align: right; font: inherit; font-weight: 700; padding: 0; -moz-appearance: textfield; }
+#fccl .fl-step input::-webkit-inner-spin-button, #fccl .fl-step input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+#fccl .fl-step i { font-style: normal; color: #a9b0c0; margin-right: 2px; }
+#fccl input.fl-sw { appearance: none; -webkit-appearance: none; width: 44px; height: 24px; border-radius: 12px; background: #3a3d48; position: relative; cursor: pointer; transition: background .15s; margin: 0; flex: none; }
+#fccl input.fl-sw::before { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .15s; }
+#fccl input.fl-sw:checked { background: #6c5ce7; }
+#fccl input.fl-sw:checked::before { transform: translateX(20px); }
+#fccl .fl-sec { margin: 16px 0 6px; font-weight: 700; }
 #fccl textarea { width: 100%; height: 60px; background: #2d303a; color: #fff; border: 1px solid #444; border-radius: 8px; padding: 8px; font: inherit; margin-top: 4px; }
-#fccl details { margin: 10px 0; }
+#fccl details { margin: 0; }
 #fccl summary { cursor: pointer; list-style: none; font-weight: 600; }
 #fccl summary::-webkit-details-marker { display: none; }
 #fccl .fl-arrow { font-size: 11px; color: #a9b0c0; display: inline-block; transition: transform .15s; }
 #fccl details[open] .fl-arrow { transform: rotate(180deg); }
 #fccl textarea.fl-tall { height: 120px; }
-#fccl .fl-note { color: #9aa1b2; font-size: 12.5px; margin: 4px 0 12px; }
-#fccl .fl-works { max-height: 40vh; overflow-y: auto; margin: 6px 0; }
+#fccl .fl-note { color: #8d94a5; font-size: 12px; margin: 6px 0 12px; }
+#fccl .fl-works { max-height: 40vh; overflow-y: auto; padding: 6px 4px; border-bottom: 1px solid #2c2f3a; }
 #fccl label.fl-work { display: block; margin: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#fccl input[type=checkbox] { width: 18px; height: 18px; vertical-align: -3px; accent-color: #6c5ce7; }
+#fccl input[type=checkbox]:not(.fl-sw) { width: 18px; height: 18px; vertical-align: -3px; accent-color: #6c5ce7; }
 `;
 
   // 단추가 사이트의 단추·입력칸(댓글 전송 등)을 가리면 비어 있는 다른 모서리로 옮김. 창이 열려 있을 때는 그대로
@@ -869,7 +905,7 @@
   }
 
   const runHtml = () => `<div class="fl-status">${esc(lastStatus)}</div>
-    <button class="fl-red" data-act="stop">중단</button><div class="fl-hint">이 탭 유지</div>`;
+    <button class="fl-red" data-act="stop">중단</button>`;
 
   function mainHtml() {
     if (otherJob()) return `<div class="fl-warn">다른 탭에서 정리 중</div><button class="fl-red" data-act="stopOther">중단</button>`;
@@ -888,17 +924,25 @@
 
   const onCount = () => S.works.filter(w => !S.offWorks.includes(w.id)).length;
   const worksLabel = () => S.works.length ? `작품 ${onCount()}/${S.works.length}` : '작품 목록 없음';
-  const worksHtml = () => `<details id="fl-works-box"${worksOpen ? ' open' : ''}><summary>검사 작품 (${S.works.length ? `${onCount()}/${S.works.length}` : '없음'}) <span class="fl-arrow">▼</span></summary>
+  const worksHtml = () => `<details id="fl-works-box"${worksOpen ? ' open' : ''}><summary class="fl-opt"><span>검사 작품</span><span class="fl-val">${S.works.length ? `${onCount()}/${S.works.length}` : '없음'} <span class="fl-arrow">▼</span></span></summary>
     ${listMsg ? `<div class="fl-warn">${esc(listMsg)}</div>` : ''}
     <div class="fl-works">${S.works.map(w => `<label class="fl-work"><input type="checkbox" data-wid="${esc(w.id)}"${S.offWorks.includes(w.id) ? '' : ' checked'}> ${esc(w.title)}</label>`).join('')}</div>
-    <button class="fl-link" data-act="loadWorks">${S.works.length ? '목록 다시 불러오기' : '목록 불러오기'}</button></details>`;
-  const settingsHtml = () => `${worksHtml()}<label class="fl-row">검사 기간: <input type="number" id="fl-days" min="1" max="60"> 일</label>
-    <label class="fl-row">길이 기준: <input type="number" id="fl-maxlen" min="1" max="500"> 자 이하만 삭제</label>
-    <label class="fl-row">금지어<textarea id="fl-words" class="fl-tall" placeholder="맞팔, 임무, 출석"></textarea></label>
-    <label class="fl-row">도배 삭제 <input type="checkbox" id="fl-burst"> · 같은 말 <input type="number" id="fl-burstn" min="2" max="20"> 번 이상</label>
-    <label class="fl-row">이모지 삭제 <input type="checkbox" id="fl-emoji"></label>
-    <label class="fl-row">지우기 전 확인 <input type="checkbox" id="fl-preview"></label>
-    <div class="fl-note">*기본 삭제: 온점(.), 초성도배</div>
+    </details>
+    <button class="fl-opt fl-optbtn" data-act="loadWorks"><span>에피소드 목록 확인</span><span class="fl-val">↻</span></button>`;
+  // 한 줄 = 이름 + 오른쪽 조작 (−/+ 숫자 · 스위치)
+  const stepper = (id, min, max, unit) => `<span class="fl-step"><button type="button" data-act="step" data-for="${id}" data-d="-1">−</button><input type="number" id="${id}" min="${min}" max="${max}"><i>${unit}</i><button type="button" data-act="step" data-for="${id}" data-d="1">+</button></span>`;
+  const opt = (name, ctl) => `<label class="fl-opt"><span>${name}</span>${ctl}</label>`;
+  const sw = id => `<input type="checkbox" class="fl-sw" id="${id}">`;
+  const settingsHtml = () => `${worksHtml()}
+    ${opt('검사 기간', stepper('fl-days', 1, 60, '일'))}
+    ${opt('길이 기준', stepper('fl-maxlen', 1, 500, '자'))}
+    ${opt('도배 삭제', sw('fl-burst'))}
+    ${opt('도배 기준', stepper('fl-burstn', 2, 20, '번'))}
+    ${opt('이모지 삭제', sw('fl-emoji'))}
+    ${opt('지우기 전 확인', sw('fl-preview'))}
+    <div class="fl-sec">금지어</div>
+    <textarea id="fl-words" class="fl-tall" placeholder="맞팔, 임무, 출석"></textarea>
+    <div class="fl-note">기본 삭제: 온점(.), 초성도배</div>
     <button class="fl-big" data-act="saveSettings">저장</button>
     <div class="fl-hint">v${VERSION}</div>`;
   function fillSettings() {
@@ -932,6 +976,12 @@
     if (act === 'settings') { view = 'settings'; worksOpen = false; listMsg = ''; render(); return; }
     if (act === 'back') { view = 'main'; render(); return; }
     if (act === 'saveSettings') { readSettings(); view = 'main'; render(); return; }
+    if (act === 'step') {
+      const inp = panel.querySelector('#' + b.dataset.for);
+      const v = (parseInt(inp.value, 10) || 0) + Number(b.dataset.d);
+      inp.value = Math.min(Number(inp.max), Math.max(Number(inp.min), v));
+      return;
+    }
     if (act === 'loadWorks') { readSettings(); startJob('list'); return; }
     if (act === 'start') {
       if (!S.works.length) { startJob('list'); return; }   // 처음: 작품 목록부터 불러와 고르게 함
