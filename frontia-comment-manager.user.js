@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         프론티아 댓글 관리
 // @namespace    frontia-comment-manager
-// @version      2.3.0
-// @description  내 작품의 금지어·어뷰징 댓글(온점·초성·같은 말 반복·맞팔 등) 자동 삭제. 한국어 화면 전용.
+// @version      2.4.0
+// @description  내 작품의 금지어·어뷰징 댓글(온점·초성·이모지·금지어·도배) 자동 삭제. 한국어 화면 전용.
 // @match        https://frontia.ai/*
 // @updateURL    https://raw.githubusercontent.com/Knotmoon23/frontia-comment-manager/main/frontia-comment-manager.user.js
 // @downloadURL  https://raw.githubusercontent.com/Knotmoon23/frontia-comment-manager/main/frontia-comment-manager.user.js
@@ -15,8 +15,8 @@
 
 // 흐름: [정리 시작] → 첫 화면에서 내 프로필 주소 읽기 → 내 프로필에서 작품 목록 →
 //       작품마다 댓글 창 열기 → 판정 → 걸린 것 바로 삭제 → 지운 건수
-// 지우는 것은 금지어와 확실한 어뷰징뿐 (온점·초성·같은 말 반복·구걸·맞팔·흔적·도배). 물음표·칭찬·사진 댓글은 건드리지 않음.
-// '지우기 전에 먼저 보기' 를 켜면 지우지 않고 걸린 댓글 글만 보여 줌.
+// 지우는 것: 온점·기호·이모지만 · 초성만 · 금지어(구걸·홍보·보상용·흔적 포함, 설정에서 고침) · 도배(설정). 길이 기준보다 긴 댓글은 안 지움.
+// '지우기 전 확인' 을 켜면 지우지 않고 걸린 댓글 글만 보여 줌.
 // 작품을 옮겨 다니며 페이지가 새로 열리므로, 진행 상태는 저장소(fccl.job)에 두고 새 페이지에서 이어 간다.
 // 읽기·삭제는 지휘소 엔진(src/frontia-comment-cleaner.user.js)에서 한국어 부분만 옮겨 온 것.
 
@@ -24,7 +24,7 @@
   'use strict';
   if (window.top !== window.self) return;
 
-  const VERSION = '2.3.0';
+  const VERSION = '2.4.0';
   const T = { deleteGap: 1800, idleWait: 10000, menuWait: 2000, reflectWait: 8000, finalCheckWait: 8000,
     perItemMax: 240000, blockedGap: 8000, scrollRounds: 40 };   // perItemMax: 사람이 [삭제]를 누르길 기다리는 3분보다 길게
 
@@ -41,10 +41,19 @@
   const writeJSON = (k, v) => gmSet(k, v == null ? '' : JSON.stringify(v));
   const SET_KEY = 'fccl.settings', JOB_KEY = 'fccl.job', LAST_KEY = 'fccl.last', AGREED_KEY = 'fccl.agreed';
 
-  const PRESET_WORDS = ['맞팔', '선팔', '임무', '미션', '출석', '출첵', '1등', '1빠'];
+  // 기본 금지어: 임무용 한마디 · 구걸·홍보 · 보상용(일일 임무) · 흔적만 남김. 띄어쓰기는 무시하고 찾음
+  const PRESET_WORDS = ['맞팔', '선팔', '임무', '미션', '출석', '출첵', '1등', '1빠',
+    '좋아요 눌러', '좋아요 부탁', '하트 눌러', '하트 부탁', '팔로우 해', '팔로우 부탁', '구독 부탁', '많관부', '놀러 오세요',
+    '스타 주세요', '스타 나눔', '크레딧 주세요', '초대 코드', '추천 코드', '추천인',
+    '일일 임무', '일일 미션', '일일 퀘스트',
+    '도장 꾹', '도장 찍', '찍고 갑니다', '다녀 갑니다', '흔적 남기'];
   // works: 프로필에서 읽은 내 작품 [{id, title}] · offWorks: 체크를 끈 작품 id (새 작품은 켜진 채로 들어옴)
-  const DEFAULTS = { maxAgeDays: 7, offTopicWords: PRESET_WORDS, previewFirst: false, works: [], offWorks: [] };
+  // maxLen: 이보다 긴 댓글은 안 지움 · burst/burstCount: 도배(같은 사람·같은 말·1시간 안 N번)
+  const DEFAULTS = { maxAgeDays: 7, maxLen: 20, burst: true, burstCount: 3, offTopicWords: PRESET_WORDS, previewFirst: false,
+    works: [], offWorks: [], wordsV: 2 };
   let S = { ...DEFAULTS, ...readJSON(SET_KEY, {}) };
+  // v2.3 이하에서 저장한 금지어에는 새 기본 금지어(구걸·보상용·흔적)가 없음 → 한 번만 더해 줌
+  if (S.wordsV !== 2) { S.offTopicWords = [...new Set([...(S.offTopicWords || []), ...PRESET_WORDS])]; S.wordsV = 2; writeJSON(SET_KEY, S); }
   const saveSettings = () => writeJSON(SET_KEY, S);
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -67,86 +76,39 @@
   }
 
   /* ===================== 판정 (한국어) ===================== */
-  // 지우는 것: 온점·기호만 · 초성만 · 같은 말 반복 · 금지어 · 구걸·맞팔 · 일일 임무 · 흔적만 · 도배
-  // 물음표·사진이 있는 댓글은 판정 전에 뺌 (scan). 칭찬·질문·긴 글은 지우지 않음.
+  // 지우는 것: 온점·기호·이모지만 · 초성만 · 금지어(구걸·홍보·보상용·흔적 포함, 설정에서 고침) · 도배(설정에서 끔/켬)
+  // 설정의 '길이 기준' 보다 긴 댓글은 지우지 않음.
   const seg = typeof Intl !== 'undefined' && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
   const graphemes = s => seg ? [...seg.segment(s)].map(x => x.segment) : [...s];
   const norm = s => (s || '').replace(/\s+/g, '');
   const flat = s => norm(String(s || '')).toLowerCase();
   const SYMBOLS_ONLY = /^[\p{P}\p{S}\p{N}\p{M}\p{Cf}\p{Z}️]+$/u;
+  const lengthOf = body => graphemes(norm(body)).length;   // 띄어쓰기 빼고 센 글자 수
 
-  // 긴 댓글(한글이 있으면 15자, 아니면 30자 이상)
-  function isLong(body) {
-    const t = (body || '').replace(/\p{Cf}/gu, '').trim().replace(/\s+/g, ' ');
-    if (SYMBOLS_ONLY.test(t)) return false;
-    return graphemes(t).length >= (/[가-힣]/.test(t) ? 15 : 30);
-  }
-
-  // 글 전체가 한 말의 되풀이 ('하하하' · '임무 임무' · '재밌다재밌다')
-  function isRepeat(body) {
-    const g = graphemes(String(body || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, ''));
-    for (let p = 1; p * 2 <= g.length; p++) {
-      if (g.length % p === 0 && g.every((x, i) => x === g[i % p])) return true;
-    }
-    return false;
-  }
-
-  // 금지어. '임무' 같은 흔한 말은 짧고 다른 말이 없는 댓글에서만
-  const LOOSE_WORDS = ['임무', '미션', '출석'];
-  const RE_WORD_NOT = /않|없|별로|근데|지만/;
-  function wordReason(body) {
-    const t = flat(body), plain = graphemes(t).length <= 20 && !RE_WORD_NOT.test(t);
-    const hit = (S.offTopicWords || []).find(w => flat(w) && t.includes(flat(w)) && (plain || !LOOSE_WORDS.includes(w)));
+  // 지울 까닭 (없으면 null). 금지어는 띄어쓰기·대소문자 무시하고 글 안에 있으면
+  function judgeText(body) {
+    const t = norm(body);
+    if (!t || lengthOf(body) > S.maxLen) return null;
+    if (SYMBOLS_ONLY.test(t)) return '온점·기호';
+    if (/^[ㄱ-ㆎ]+$/.test(t.replace(/[^\p{L}]/gu, ''))) return '초성';
+    const hit = (S.offTopicWords || []).find(w => flat(w) && flat(t).includes(flat(w)));
     return hit ? '금지어 ' + hit : null;
   }
 
-  // 구걸·홍보
-  const BEG = [
-    ['좋아요 구걸', /좋아요\s*\d+\s*개.{0,10}(임무|미션|업적)|(임무|미션|업적).{0,10}좋아요\s*\d+\s*개|좋아요\s*(임무|미션|업적)/],
-    ['재화 구걸', /(스타|크레딧|재화|다이아|코인|포인트)\s*(좀\s*)?(주세요|줘|주실|주면|주시면|나눔|나눠|선물|보내|구걸|구함|구해요|받고\s*싶)|무료\s*(스타|크레딧)|(스타|크레딧)\s*(나눔|구걸)/],
-    // '추천해 주세요' 는 작품 추천을 묻는 말일 수 있어 '추천' 은 누르는 말만
-    ['좋아요 구걸', /(좋아요|하트)\s*(좀\s*)?(눌러|부탁|해\s*주|박아|꾹|주세요|줘|ㄱㄱ)|추천\s*(좀\s*)?(눌러|박아|꾹)|좋아요\s*구걸/],
-    ['맞팔·홍보', /맞팔|선팔|(팔로우|팔로|구독)\s*(해|부탁|좀|ㄱ)|많관부|놀러\s*오세요|(제|내|저희)\s*(캐릭터|캐릭|작품|에피소드|에피|채널|프로필)\s*(도|좀)?\s*(봐|와|놀러|구경|들러|해\s*주|부탁|관심)|(초대|추천인|추천)\s*코드/],
-  ];
-  const begReason = body => { const t = (body || '').replace(/\s+/g, ' '); const hit = BEG.find(([, re]) => re.test(t)); return hit ? hit[0] : null; };
-
-  // 일일 임무 하려고 단 짧은 글
-  const RE_DAILY = /일일\s*(임무|미션|퀘스트)/;
-  const dailyReason = body => RE_DAILY.test(body) && !isLong(body.replace(new RegExp(RE_DAILY.source, 'g'), ' ')) ? '보상용 댓글' : null;
-
-  // '도장 꾹'·'찍고 갑니다' 뿐인 글
-  const RE_TRACE = /도장\s*(꾹|찍)|찍고\s*(갑니다|감|가요)|다녀\s*갑니다|흔적\s*(남기|남겨)/g;
-  function traceReason(body) {
-    RE_TRACE.lastIndex = 0;
-    if (isLong(body) || !RE_TRACE.test(body)) return null;
-    const left = graphemes(norm(body.replace(RE_TRACE, ' ')).replace(/[\p{P}\p{S}\p{N}\p{M}\p{Cf}️~]/gu, ''));
-    return left.length <= 4 ? '흔적만 남김' : null;
-  }
-
-  // 지울 까닭 (없으면 null)
-  function judgeText(body) {
-    const t = norm(body);
-    if (!t || /[?？]/.test(t)) return null;
-    if (SYMBOLS_ONLY.test(t)) return '온점·기호';
-    const letters = t.replace(/[^\p{L}]/gu, '');
-    if (/^[ㄱ-ㆎ]+$/.test(letters)) return '초성';
-    if (isRepeat(t)) return '같은 말 반복';
-    return begReason(body) || wordReason(body) || dailyReason(body) || traceReason(body);
-  }
-
-  // 도배: 같은 사람이 1시간 안에 짧은 같은 말을 3번 이상
+  // 도배: 같은 사람이 1시간 안에 같은 말을 설정한 번 수 이상 (길이 기준 안의 댓글만)
   function markBurst(list) {
+    if (!S.burst) return;
+    const n = S.burstCount;
     const byUser = {};
     list.forEach(c => (byUser[c.groupKey] ||= []).push(c));
     Object.values(byUser).forEach(group => {
-      if (group.length < 3) return;
+      if (group.length < n) return;
       group.sort((a, b) => a.minutesAgo - b.minutesAgo);
-      for (let i = 0; i + 2 < group.length; i++) {
-        const win = group.filter(c => c.minutesAgo >= group[i].minutesAgo && c.minutesAgo - group[i].minutesAgo <= 60);
-        if (win.length < 3 || !win.every(c => graphemes(norm(c.body)).length <= 12)) continue;
+      for (let i = 0; i + n - 1 < group.length; i++) {
+        const win = group.filter(c => c.minutesAgo >= group[i].minutesAgo && c.minutesAgo - group[i].minutesAgo <= 60 && lengthOf(c.body) <= S.maxLen);
         const cnt = {};
         win.forEach(c => { const t = flat(c.body); cnt[t] = (cnt[t] || 0) + 1; });
-        win.filter(c => cnt[flat(c.body)] >= 2 && !c.verdict).forEach(c => { c.verdict = '도배'; });
+        win.filter(c => cnt[flat(c.body)] >= n && !c.verdict).forEach(c => { c.verdict = '도배'; });
       }
     });
   }
@@ -418,13 +380,13 @@
       else if (c.isReply && mineThreads.has(c.top)) c.convo = true;   // 내가 먼저 답한 글타래의 답글 = 나와의 대화
       if (!c.kebab || c.removed || isDoneRow(row, c) || c.minutesAgo > S.maxAgeDays * 1440) return;
       if (isMe || c.liked || c.badge) return;   // 내 댓글 · 내가 ♥ 누른 댓글 · 파트너 디렉터는 안 건드림
-      if (c.images.length || /[?？]/.test(c.body)) return;   // 사진·물음표 댓글은 안 건드림
+      if (!c.body) return;   // 사진만 있는 댓글은 판정할 글이 없음
       c.verdict = judgeText(c.body);
       list.push(c);
     });
     markBurst(list);
     // 나와 대화 중인 답글('ㅎㅎ' 등)은 금지어·구걸이 아니면 남김
-    const light = ['온점·기호', '초성', '같은 말 반복', '도배'];
+    const light = ['온점·기호', '초성', '도배'];
     list.forEach(c => { if (c.convo && light.includes(c.verdict)) c.verdict = null; });
     const hits = list.filter(c => c.verdict);
     return { hits, rows: rows.length, unreadable };
@@ -819,6 +781,7 @@
 #fccl summary::-webkit-details-marker { display: none; }
 #fccl .fl-arrow { font-size: 11px; color: #a9b0c0; display: inline-block; transition: transform .15s; }
 #fccl details[open] .fl-arrow { transform: rotate(180deg); }
+#fccl textarea.fl-tall { height: 120px; }
 #fccl .fl-note { color: #9aa1b2; font-size: 12.5px; margin: 4px 0 12px; }
 #fccl .fl-works { max-height: 40vh; overflow-y: auto; margin: 6px 0; }
 #fccl label.fl-work { display: block; margin: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -892,19 +855,28 @@
     <div class="fl-works">${S.works.map(w => `<label class="fl-work"><input type="checkbox" data-wid="${esc(w.id)}"${S.offWorks.includes(w.id) ? '' : ' checked'}> ${esc(w.title)}</label>`).join('')}</div>
     <button class="fl-link" data-act="loadWorks">${S.works.length ? '목록 다시 불러오기' : '목록 불러오기'}</button></details>`;
   const settingsHtml = () => `${worksHtml()}<label class="fl-row">검사 기간: <input type="number" id="fl-days" min="1" max="60"> 일</label>
-    <label class="fl-row">금지어<textarea id="fl-words" placeholder="맞팔, 임무, 출석"></textarea></label>
+    <label class="fl-row">길이 기준: <input type="number" id="fl-maxlen" min="1" max="500"> 자 이하만 삭제</label>
+    <label class="fl-row">금지어<textarea id="fl-words" class="fl-tall" placeholder="맞팔, 임무, 출석"></textarea></label>
+    <label class="fl-row">도배 삭제 <input type="checkbox" id="fl-burst"> · 같은 말 <input type="number" id="fl-burstn" min="2" max="20"> 번 이상</label>
     <label class="fl-row">지우기 전 확인 <input type="checkbox" id="fl-preview"></label>
     <div class="fl-note">*기본 삭제: 온점(.), 초성도배, 이모지 하나</div>
     <button class="fl-big" data-act="saveSettings">저장</button>
     <div class="fl-hint">v${VERSION}</div>`;
   function fillSettings() {
     panel.querySelector('#fl-days').value = S.maxAgeDays;
+    panel.querySelector('#fl-maxlen').value = S.maxLen;
+    panel.querySelector('#fl-burst').checked = !!S.burst;
+    panel.querySelector('#fl-burstn').value = S.burstCount;
     panel.querySelector('#fl-words').value = (S.offTopicWords || []).join(', ');
     panel.querySelector('#fl-preview').checked = !!S.previewFirst;
   }
   function readSettings() {
     const d = parseInt(panel.querySelector('#fl-days').value, 10);
     S.maxAgeDays = Number.isFinite(d) ? Math.min(60, Math.max(1, d)) : DEFAULTS.maxAgeDays;
+    const num = (id, lo, hi, def) => { const v = parseInt(panel.querySelector(id).value, 10); return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : def; };
+    S.maxLen = num('#fl-maxlen', 1, 500, DEFAULTS.maxLen);
+    S.burst = panel.querySelector('#fl-burst').checked;
+    S.burstCount = num('#fl-burstn', 2, 20, DEFAULTS.burstCount);
     S.offTopicWords = [...new Set(panel.querySelector('#fl-words').value.split(/[,，\n]/).map(w => w.trim()).filter(Boolean))];
     S.previewFirst = panel.querySelector('#fl-preview').checked;
     S.offWorks = [...panel.querySelectorAll('input[data-wid]')].filter(i => !i.checked).map(i => i.dataset.wid);
