@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         프론티아 댓글 관리
 // @namespace    frontia-comment-manager
-// @version      2.8.0
+// @version      2.8.1
 // @description  내 작품의 금지어·어뷰징 댓글(온점·초성·이모지·금지어·도배) 자동 삭제. 한국어 화면 전용.
 // @match        https://frontia.ai/*
 // @updateURL    https://raw.githubusercontent.com/Knotmoon23/frontia-comment-manager/main/frontia-comment-manager.user.js
@@ -24,7 +24,7 @@
   if (window.top !== window.self) return;
 
   const OURS = '#fccl, #fccl-btn';
-  const VERSION = '2.8.0';
+  const VERSION = '2.8.1';
   const T = { deleteGap: 1800, idleWait: 10000, menuWait: 2000, reflectWait: 8000, finalCheckWait: 8000,
     perItemMax: 240000, blockedGap: 8000, scrollRounds: 40 };   // perItemMax: 사람이 [삭제]를 누르길 기다리는 3분보다 길게
 
@@ -115,11 +115,20 @@
   }
 
   /* ===================== 화면에서 댓글 읽기 ===================== */
-  const ROW_SEL = 'div.relative.flex.w-full.items-start';
+  // 2026-10-20 개편: 주소로 에피소드를 열면 뒤에 메인 화면이 깔리는데, 그 작품 카드(flex-col)도 이 모양이라 뺌
+  const ROW_SEL = 'div.relative.flex.w-full.items-start:not(.flex-col)';
   const visibleText = el => (el ? el.innerText || '' : '').trim();
   const isText = (el, ...words) => words.includes(visibleText(el));
-  const commentPanel = () => [...document.querySelectorAll('[role="dialog"][data-state="open"]')]
-    .find(d => d.querySelector(ROW_SEL) || [...d.querySelectorAll('button')].some(b => isText(b, '최신'))) || null;
+  // 2026-10-20 개편: 에피소드 화면 자체가 창(dialog)이고, 댓글은 그 안의 오른쪽 칸(role="region") → 댓글 칸만 돌려줌
+  //   (창 전체로 보면 에피소드 소개 쪽 스크롤 상자를 잡아 댓글을 10건밖에 못 불러옴)
+  function commentPanel() {
+    const d = [...document.querySelectorAll('[role="dialog"][data-state="open"]')]
+      .find(d => d.querySelector(ROW_SEL) || [...d.querySelectorAll('button')].some(b => isText(b, '최신')));
+    if (!d) return null;
+    const anchor = d.querySelector(ROW_SEL) || [...d.querySelectorAll('button')].find(b => isText(b, '최신'));
+    const region = anchor && anchor.closest('[role="region"]');
+    return region && d.contains(region) ? region : d;
+  }
   const commentRoot = () => commentPanel() || document;
   const rowCount = () => commentRoot().querySelectorAll(ROW_SEL).length;
   // 답글은 원댓글 행 안에 같은 모양으로 들어가므로, 그 행에 직접 속한 요소만 고름
@@ -171,11 +180,13 @@
   }
 
   // 에피소드 화면의 「댓글 6 >」 머리 (제목 2개 = 이름·숫자). 글자가 달라도 모양으로 찾음
+  // 2026-10-20 개편: 에피소드 화면이 창 안에 있고 머리에 숫자 제목이 둘 → 댓글 칸 밖이면 되고 제목 2개 이상
   function commentHeadBtn() {
+    const panel = commentPanel();
     const cands = [...document.querySelectorAll('button')].filter(b => {
-      if (b.closest(OURS) || b.closest('[role="dialog"]')) return false;
+      if (b.closest(OURS) || (panel && panel.contains(b))) return false;
       const hs = b.querySelectorAll('h1,h2,h3,h4');
-      return hs.length === 2 && /^\d[\d,]*\+?$/.test(visibleText(hs[1]));
+      return hs.length >= 2 && /^\d[\d,]*\+?$/.test(visibleText(hs[1]));
     });
     return cands.find(b => isText(b.querySelector('h1,h2,h3,h4'), '댓글')) || cands[0] || null;
   }
@@ -217,7 +228,8 @@
     return [...el.querySelectorAll('div')]
       .filter(d => !d.closest(OURS) && /(auto|scroll)/.test(getComputedStyle(d).overflowY) &&
         d.scrollHeight > d.clientHeight + 20 && d.clientHeight > 120)
-      .sort((a, b) => b.scrollHeight - a.scrollHeight)[0] || null;
+      // 댓글 줄이 든 상자를 먼저 (2026-10-20: 에피소드 소개와 댓글 목록이 한 창에 있고 소개 쪽이 더 긺)
+      .sort((a, b) => (!!b.querySelector(ROW_SEL) - !!a.querySelector(ROW_SEL)) || b.scrollHeight - a.scrollHeight)[0] || null;
   }
   function getScrollBox() {
     const panel = commentPanel();
@@ -302,8 +314,8 @@
       box.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 400, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }));
       await waitFor(() => rowCount() !== before, 3000);
       if (rowCount() === before) { if (document.hidden) { await waitVisible(); i--; continue; } stuck++; } else stuck = 0;
-      if (!document.querySelector('img[alt="loading-icon"]')) break;
-      const rows = document.querySelectorAll(ROW_SEL);
+      if (!commentRoot().querySelector('img[alt="loading-icon"]')) break;   // 소개 쪽 로딩 아이콘은 늘 남아 있어 댓글 칸만 봄
+      const rows = commentRoot().querySelectorAll(ROW_SEL);
       const last = rows.length ? parseRow(rows[rows.length - 1]) : null;
       if (newestFirst && last && last.minutesAgo > S.maxAgeDays * 1440) break;
     }
